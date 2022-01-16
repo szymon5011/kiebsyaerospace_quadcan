@@ -1,0 +1,101 @@
+import sensor, image, time, math
+from pyb import UART, Pin, Timer, millis
+from pid import PID
+from math import pi, isnan
+import pyb
+uart = UART(3, 19200)
+uart.init(19200, bits=8, parity=None)
+sensor.reset()
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QQVGA)
+sensor.skip_frames(time = 2000)
+sensor.set_auto_gain(False)
+sensor.set_auto_whitebal(False)
+clock = time.clock()
+red_led = pyb.LED(3)
+pid1 = PID(p=1, i=0.1, imax=900)
+pid2 = PID(p=1, i=0.1, imax=900)
+pid3 = PID(p=0, i=0.1, imax=900)
+class PID:
+	_kp = _ki = _kd = _integrator = _imax = 0
+	_last_error = _last_derivative = _last_t = 0
+	_RC = 1/(2 * pi * 20)
+	def __init__(self, p=0, i=0, d=0, imax=0):
+		self._kp = float(p)
+		self._ki = float(i)
+		self._kd = float(d)
+		self._imax = abs(imax)
+		self._last_derivative = float('nan')
+	def get_pid(self, error, scaler):
+		tnow = millis()
+		dt = tnow - self._last_t
+		output = 0
+		if self._last_t == 0 or dt > 1000:
+			dt = 0
+			self.reset_I()
+		self._last_t = tnow
+		delta_time = float(dt) / float(1000)
+		output += error * self._kp
+		if abs(self._kd) > 0 and dt > 0:
+			if isnan(self._last_derivative):
+				derivative = 0
+				self._last_derivative = 0
+			else:
+				derivative = (error - self._last_error) / delta_time
+			derivative = self._last_derivative + \
+									 ((delta_time / (self._RC + delta_time)) * \
+										(derivative - self._last_derivative))
+			self._last_error = error
+			self._last_derivative = derivative
+			output += self._kd * derivative
+		output *= scaler
+		if abs(self._ki) > 0 and dt > 0:
+			self._integrator += (error * self._ki) * scaler * delta_time
+			if self._integrator < -self._imax: self._integrator = -self._imax
+			elif self._integrator > self._imax: self._integrator = self._imax
+			output += self._integrator
+		return output
+	def reset_I(self):
+		self._integrator = 0
+		self._last_derivative = float('nan')
+f_x = (2.8 / 3.984) * 160
+f_y = (2.8 / 2.952) * 120
+c_x = 160 * 0.5
+c_y = 120 * 0.5
+buf = 0
+def degrees(radians):
+	return (180 * radians) / math.pi
+while(True):
+	clock.tick()
+	img = sensor.snapshot()
+	red_led.off()
+	for tag in img.find_apriltags(fx=f_x, fy=f_y, cx=c_x, cy=c_y):
+		img.draw_rectangle(tag.rect(), color = (255, 0, 0))
+		img.draw_cross(tag.cx(), tag.cy(), color = (0, 255, 0))
+		errorx = tag.cx()-80
+		errory = -tag.cy()+64
+		errorz = tag.z_translation()+4
+		outputx=pid1.get_pid(errorx, 1)
+		outputy=pid2.get_pid(errory, 1)
+		outputz=pid3.get_pid(errorz, 1)
+		if(outputz < 0):
+			outputz = 0
+		if(outputz > 99):
+			outputz = 99
+		ioutputx = round(50+int(outputx*0.5))
+		ioutputy = round(50+int(outputy*0.5))
+		ioutputz = round(int(outputz*100))
+		soutputx = str(ioutputx)
+		soutputy = str(ioutputy)
+		soutputz = str(ioutputz)
+		if(ioutputx < 10):
+			soutputx = "0"+outputx
+		if(ioutputx < 10):
+			soutputy = "0"+soutputy
+		if(ioutputz < 10):
+			soutputz = "0"+soutputz
+		sending = "$"+soutputx+":"+soutputy+":"+soutputz+"*"
+		print(sending)
+		uart.write(sending)
+		red_led.on()
+	time.sleep_ms(100)
